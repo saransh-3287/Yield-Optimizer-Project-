@@ -1,0 +1,341 @@
+import json
+from web3 import Web3
+import numpy as np
+from scipy.optimize import minimize
+
+SECONDS_PER_YEAR = 365 * 24 * 60 * 60
+TOTAL_TOKEN_ALLOCATION = 1e6 # Total tokens 
+
+RPC_URL = "https://arb-mainnet.g.alchemy.com/v2/A74JBIQ7lj4_GjTzHMSwN8wTacre_Lq0"
+web3 = Web3(Web3.HTTPProvider(RPC_URL))
+
+USDT_ADDRESS = web3.to_checksum_address("0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9")
+
+# ------------------- Compound Setup -------------------
+COMPOUND_ABI_PATH = r"C:\Users\saran\OneDrive\Desktop\data_retrieval\compound_abi.json"
+with open(COMPOUND_ABI_PATH, 'r') as abi_file:
+    compound_abi = json.load(abi_file)
+
+COMPOUND_CONTRACT_ADDRESS = "0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07"
+compound_contract = web3.eth.contract(address=COMPOUND_CONTRACT_ADDRESS, abi=compound_abi)
+
+import json
+from web3 import Web3
+
+# Load ABI from file
+abi_path = r"C:\Users\saran\OneDrive\Desktop\data_retrieval\compound_abi.json"
+with open(abi_path, 'r') as abi_file:
+    abi = json.load(abi_file)
+
+# RPC endpoint and contract address
+rpc_url = "https://arb-mainnet.g.alchemy.com/v2/A74JBIQ7lj4_GjTzHMSwN8wTacre_Lq0"
+contract_address = "0xd98Be00b5D27fc98112BdE293e487f8D4cA57d07"
+
+# Connect to Arbitrum via Alchemy
+web3 = Web3(Web3.HTTPProvider(rpc_url))
+contract = web3.eth.contract(address=contract_address, abi=abi)
+
+SECONDS_PER_YEAR = 365 * 24 * 60 * 60
+
+# Function to fetch, convert, and print per-second interest rates
+def get_rate(name):
+    try:
+        raw = int(getattr(contract.functions, name)().call())
+        rate = raw * SECONDS_PER_YEAR / 1e18  # Convert to annual rate
+        return rate
+
+    except Exception as e:
+        print(f"Error fetching {name}: {e}")
+
+# Fetch supply kink (this is a utilization ratio between 0–1)
+try:
+    kink_c = int(contract.functions.supplyKink().call()) / 1e18
+except Exception as e:
+    print(f"Error fetching supplyKink: {e}")
+
+# Fetch supply kink (this is a utilization ratio between 0–1)
+try:
+    kink_c = int(contract.functions.borrowKink().call()) / 1e18
+except Exception as e:
+    print(f"Error fetching borrowKink: {e}")
+
+
+try:
+    totalBorrow_usdt = int(contract.functions.totalBorrow().call())
+except Exception as e:
+    print(f"Error fetching : {e}")
+
+
+try:
+    totalSupply_usdt = int(contract.functions.totalSupply().call())
+except Exception as e:
+    print(f"Error fetching : {e}")
+
+
+
+# Fetch rates
+s2_c = get_rate("supplyPerSecondInterestRateSlopeHigh")
+s1_c = get_rate("supplyPerSecondInterestRateSlopeLow")
+s0_c = get_rate("supplyPerSecondInterestRateBase")
+r2_c = get_rate("borrowPerSecondInterestRateSlopeHigh")
+r1_c = get_rate("borrowPerSecondInterestRateSlopeLow")
+r0_c = get_rate("borrowPerSecondInterestRateBase")
+c_c = totalBorrow_usdt
+d_c = totalSupply_usdt
+u_old_c = c_c/d_c
+
+
+def SC(x, c, d, r0, r1, r2, s0, s1, s2, kink):
+
+    u = c / (d + x)  
+
+    # multi-function below
+    if u <= kink:
+        r_b = r0 + r1 * u
+    else:
+        r_b = r0 + r1 * kink + r2 * (u - kink)
+
+    if u <= kink:
+        r_s = s0 + s1 * u
+    else:
+        r_s = s0 + s1 * kink + s2 * (u - kink)
+
+    return u, r_b, r_s
+
+
+
+# ------------------- Fluid Setup -------------------
+FLUID_ABI_PATH = r"C:\Users\saran\OneDrive\Desktop\data_retrieval\fluid_abi.json"
+with open(FLUID_ABI_PATH, 'r') as abi_file:
+    fluid_abi = json.load(abi_file)
+
+FLUID_CONTRACT_ADDRESS = "0x46859d33E662d4bF18eEED88f74C36256E606e44"
+fluid_contract = web3.eth.contract(address=FLUID_CONTRACT_ADDRESS, abi=fluid_abi)
+FLUID_RESERVE_FACTOR = 0.1
+
+fluid_token_data = fluid_contract.functions.getOverallTokenData(USDT_ADDRESS).call()
+fluid_nested = fluid_token_data[-1][-1]
+fluid_rate_kink1 = fluid_nested[-3] / 100
+fluid_rate_kink2 = fluid_nested[-2] / 100
+fluid_rate_max = fluid_nested[-1] / 100
+fluid_util_kink2 = fluid_nested[-5] / 100
+fluid_util_kink1 = fluid_nested[-6] / 100
+fluid_total_supply = fluid_token_data[12]
+fluid_total_borrow = fluid_token_data[13]
+
+fluid_slope1 = (fluid_rate_kink1 - 0) / (fluid_util_kink1 - 0)
+fluid_slope2 = (fluid_rate_kink2 - fluid_rate_kink1) / (fluid_util_kink2 - fluid_util_kink1)
+fluid_slope3 = (fluid_rate_max - fluid_rate_kink2) / (100 - fluid_util_kink2)
+
+def fluid_supply_side_apy(x, total_borrow, total_supply, r0, slope1, slope2, slope3, kink1, kink2, reserve_factor):
+    utilization = total_borrow / (total_supply + x)
+    if utilization <= kink1:
+        borrow_rate = r0 + slope1 * utilization
+    elif utilization <= kink2:
+        borrow_rate = r0 + slope1 * kink1 + slope2 * (utilization - kink1)
+    else:
+        borrow_rate = r0 + slope1 * kink1 + slope2 * (kink2 - kink1) + slope3 * (utilization - kink2)
+    supply_apy = borrow_rate * utilization * (1 - reserve_factor)
+    return utilization, borrow_rate, supply_apy
+
+
+
+
+
+# ------------------- Aave Setup -------------------
+# Get Aave Reserve Factor
+AAVE_CONFIG_ABI_PATH = r"C:\Users\saran\OneDrive\Desktop\data_retrieval\aave_interestRateParam_abi.json"
+with open(AAVE_CONFIG_ABI_PATH, 'r') as abi_file:
+    aave_config_abi = json.load(abi_file)
+
+AAVE_DATA_PROVIDER_ADDRESS = web3.to_checksum_address("0x14496b405D62c24F91f04Cda1c69Dc526D56fDE5")
+aave_data_provider = web3.eth.contract(address=AAVE_DATA_PROVIDER_ADDRESS, abi=aave_config_abi)
+aave_config = aave_data_provider.functions.getReserveConfigurationData(USDT_ADDRESS).call()
+aave_reserve_factor = aave_config[4] / 1e4  # basis points to fraction
+
+# Get Aave Interest Rate Model Parameters
+AAVE_STRATEGY_ABI = [
+    {"inputs": [{"internalType": "address", "name": "reserve", "type": "address"}], "name": "getBaseVariableBorrowRate", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"internalType": "address", "name": "reserve", "type": "address"}], "name": "getVariableRateSlope1", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"internalType": "address", "name": "reserve", "type": "address"}], "name": "getVariableRateSlope2", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [{"internalType": "address", "name": "reserve", "type": "address"}], "name": "getOptimalUsageRatio", "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}], "stateMutability": "view", "type": "function"}
+]
+
+AAVE_STRATEGY_ADDRESS = aave_data_provider.functions.getInterestRateStrategyAddress(USDT_ADDRESS).call()
+aave_strategy_contract = web3.eth.contract(address=AAVE_STRATEGY_ADDRESS, abi=AAVE_STRATEGY_ABI)
+
+aave_base_rate = aave_strategy_contract.functions.getBaseVariableBorrowRate(USDT_ADDRESS).call() / 1e27
+aave_slope1 = aave_strategy_contract.functions.getVariableRateSlope1(USDT_ADDRESS).call() / 1e27
+aave_slope2 = aave_strategy_contract.functions.getVariableRateSlope2(USDT_ADDRESS).call() / 1e27
+aave_optimal_util = aave_strategy_contract.functions.getOptimalUsageRatio(USDT_ADDRESS).call() / 1e27
+
+# Get Aave total borrow and supply
+AAVE_RESERVE_DATA_ABI = [
+    {"inputs": [{"internalType": "address", "name": "asset", "type": "address"}],
+     "name": "getReserveData",
+     "outputs": [
+         {"internalType": "uint256", "name": "unbacked", "type": "uint256"},
+         {"internalType": "uint256", "name": "accruedToTreasuryScaled", "type": "uint256"},
+         {"internalType": "uint256", "name": "totalAToken", "type": "uint256"},
+         {"internalType": "uint256", "name": "totalStableDebt", "type": "uint256"},
+         {"internalType": "uint256", "name": "totalVariableDebt", "type": "uint256"},
+         # ... (rest omitted for brevity)
+     ],
+     "stateMutability": "view",
+     "type": "function"
+    }
+]
+aave_reserve_data_contract = web3.eth.contract(address=AAVE_DATA_PROVIDER_ADDRESS, abi=AAVE_RESERVE_DATA_ABI)
+aave_reserve_data = aave_reserve_data_contract.functions.getReserveData(USDT_ADDRESS).call()
+aave_total_stable_debt = aave_reserve_data[3]
+aave_total_variable_debt = aave_reserve_data[4]
+aave_total_borrow = aave_total_stable_debt + aave_total_variable_debt
+aave_total_borrow_human = aave_total_borrow / 1e6  # USDT is 6 decimals
+aave_total_supply = aave_reserve_data[2]  # totalAToken
+
+def aave_supply_side_apy(x, total_borrow, total_supply, optimal_util, base, slope1, slope2, reserve_factor):
+    utilization = total_borrow / (total_supply + x)
+    if utilization <= optimal_util:
+        borrow_rate = base + slope1 * utilization / optimal_util
+    else:
+        borrow_rate = base + slope1 + ((utilization - optimal_util) / (1 - optimal_util)) * slope2
+    supply_apy = borrow_rate * utilization * (1 - reserve_factor)
+    return utilization, borrow_rate, supply_apy
+
+
+
+
+
+
+
+
+
+
+
+
+
+# ------------------- Optimization Function -------------------
+def negative_total_yield(allocation_vars):
+    compound_alloc, fluid_alloc = allocation_vars
+    aave_alloc = TOTAL_TOKEN_ALLOCATION - compound_alloc - fluid_alloc
+
+    _, _, compound_apy = SC(
+        compound_alloc, c_c, d_c,
+        r0_c, r1_c, r2_c, s0_c, s1_c, s2_c, kink_c
+    )
+    _, _, fluid_apy = fluid_supply_side_apy(
+        fluid_alloc, fluid_total_borrow, fluid_total_supply,
+        0, fluid_slope1, fluid_slope2, fluid_slope3, fluid_util_kink1/100, fluid_util_kink2/100, FLUID_RESERVE_FACTOR
+    )
+    _, _, aave_apy = aave_supply_side_apy(
+        aave_alloc, aave_total_borrow, aave_total_supply,
+        aave_optimal_util, aave_base_rate, aave_slope1, aave_slope2, aave_reserve_factor
+    )
+
+    total_yield = (
+        compound_apy * compound_alloc +
+        fluid_apy * fluid_alloc +
+        aave_apy * aave_alloc
+    )
+    return -total_yield  # We minimize, so negate
+
+
+
+
+
+
+
+# ------------------- Run Optimization -------------------
+
+INITIAL_GUESSES = [
+    [0.0 * TOTAL_TOKEN_ALLOCATION, 0.0 * TOTAL_TOKEN_ALLOCATION],  # Aave-centric
+    [TOTAL_TOKEN_ALLOCATION/3, TOTAL_TOKEN_ALLOCATION/3],            # Balanced
+    [0.9 * TOTAL_TOKEN_ALLOCATION, 0.05 * TOTAL_TOKEN_ALLOCATION]    # Compound-heavy
+]
+bounds = [(0, TOTAL_TOKEN_ALLOCATION), (0, TOTAL_TOKEN_ALLOCATION)]
+constraints = {'type': 'ineq', 'fun': lambda x: TOTAL_TOKEN_ALLOCATION - x[0] - x[1]}
+
+from scipy.optimize import basinhopping
+
+optimizer_config = {
+    'niter': 10,
+    'stepsize': 1e9,  # Token allocation step size
+    'T': 1.0,         # Temperature parameter
+    'minimizer_kwargs': {
+        'method': 'SLSQP',
+        'bounds': bounds,
+        'constraints': constraints,
+        'options': {'maxiter': 5000, 'ftol': 1e-12}
+    }
+}
+
+best_result = basinhopping(
+    func=negative_total_yield,
+    x0=[TOTAL_TOKEN_ALLOCATION/3, TOTAL_TOKEN_ALLOCATION/3],
+    **optimizer_config
+)
+
+result = best_result
+
+
+if result.success:
+    compound_opt, fluid_opt = result.x
+    aave_opt = TOTAL_TOKEN_ALLOCATION - compound_opt - fluid_opt
+
+    _, _, compound_apy = SC(
+        compound_opt, c_c, d_c,
+        r0_c, r1_c, r2_c, s0_c, s1_c,s2_c, kink_c
+    )
+    _, _, fluid_apy = fluid_supply_side_apy(
+        fluid_opt, fluid_total_borrow, fluid_total_supply,
+        0, fluid_slope1, fluid_slope2, fluid_slope3, fluid_util_kink1/100, fluid_util_kink2/100, FLUID_RESERVE_FACTOR
+    )
+    _, _, aave_apy = aave_supply_side_apy(
+        aave_opt, aave_total_borrow, aave_total_supply,
+        aave_optimal_util, aave_base_rate, aave_slope1, aave_slope2, aave_reserve_factor
+    )
+
+    total_yield = (
+        compound_apy * compound_opt +
+        fluid_apy * fluid_opt +
+        aave_apy * aave_opt
+    )
+    strategy_apr = (total_yield / TOTAL_TOKEN_ALLOCATION) * 100
+
+    print("\nOptimization Successful:")
+    print(f"Compound Allocation: {compound_opt:.2f} ({compound_opt/TOTAL_TOKEN_ALLOCATION:.1%})")
+    print(f"Fluid Allocation:    {fluid_opt:.2f} ({fluid_opt/TOTAL_TOKEN_ALLOCATION:.1%})")
+    print(f"Aave Allocation:     {aave_opt:.2f} ({aave_opt/TOTAL_TOKEN_ALLOCATION:.1%})")
+    print(f"Total APR: {strategy_apr:.4f}%")
+else:
+    print("\nOptimization Failed:", result.message)
+    print("Try adjusting initial guesses or checking parameter validity.")
+
+
+
+
+
+_, _, r_only_c = SC(
+        TOTAL_TOKEN_ALLOCATION, c_c, d_c, r0_c, r1_c, r2_c, s0_c, s1_c,s2_c, kink_c
+    )
+
+_, _, r_only_f = fluid_supply_side_apy(
+        TOTAL_TOKEN_ALLOCATION, fluid_total_borrow, fluid_total_supply,
+        0, fluid_slope1, fluid_slope2, fluid_slope3, fluid_util_kink1/100, fluid_util_kink2/100, FLUID_RESERVE_FACTOR
+    )
+_, _, r_only_a = aave_supply_side_apy(
+        TOTAL_TOKEN_ALLOCATION, aave_total_borrow, aave_total_supply,
+        aave_optimal_util, aave_base_rate, aave_slope1, aave_slope2, aave_reserve_factor
+    )
+print(f"If fully on compound (%)->>",r_only_c*100)
+print(f"If fully on fluid (%)->>",r_only_f*100)
+print(f"If fully on aave (%)->>",r_only_a*100)
+
+#at time step 1 
+curr_comp_1 = 1395102009940.27
+curr_fluid_1 = 491278046205.69
+curr_aave_1 = 8113619943854.03
+
+opt_comp = compound_opt
+opt_fluid = fluid_opt
+opt_aave = aave_opt

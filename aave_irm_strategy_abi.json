@@ -1,0 +1,30 @@
+[
+    {
+        "inputs": [{"internalType": "address", "name": "reserve", "type": "address"}],
+        "name": "getBaseVariableBorrowRate",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "address", "name": "reserve", "type": "address"}],
+        "name": "getVariableRateSlope1",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "address", "name": "reserve", "type": "address"}],
+        "name": "getVariableRateSlope2",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "address", "name": "reserve", "type": "address"}],
+        "name": "getOptimalUsageRatio",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    }
+]
