@@ -1,0 +1,9 @@
+[
+  {
+    "inputs": [],
+    "name": "DATA_SOURCE_1",
+    "outputs": [{"internalType": "address", "name": "", "type": "address"}],
+    "stateMutability": "view",
+    "type": "function"
+  }
+]
